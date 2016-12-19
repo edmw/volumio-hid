@@ -3,10 +3,10 @@
 #
 # RFID.py
 # Reads input events from a USB RFID reader connected as HID
-# and attempts to play a associated playlist with volumio.
+# and attempts to play an associated playlist with volumio.
 #
 
-import sys, signal, logging
+import sys, logging
 
 #
 # Creates a logger which writes its messages to the syslog
@@ -14,7 +14,7 @@ import sys, signal, logging
 #
 def get_logger():
     import logging.handlers
-    logger = logging.getLogger('rfid')
+    logger = logging.getLogger()
     formatter = logging.Formatter('%(name)s: %(message)s')
     handler = logging.handlers.SysLogHandler('/dev/log')
     handler.formatter = formatter
@@ -23,30 +23,99 @@ def get_logger():
         consoleHandler = logging.StreamHandler()
         consoleHandler.setFormatter(formatter)
         logger.addHandler(consoleHandler)
-    return logger
+    return logging.getLogger('RFID')
 
 logger = get_logger()
 logger.setLevel(logging.INFO)
 
+#logging.getLogger('socketIO-client').setLevel(logging.DEBUG)
+#logging.basicConfig()
+
 #
-# Calls volumio to start playing the specified playlist.
+# VOLUMIO
 #
-def volumio(playlist_name):
+
+volumioIO = None
+
+#
+# Calls volumio and emits the specified commands.
+# @param commands: List of commands. Each command a tuple of function, arguments and optional callback.
+#
+def volumio(commands):
 
     from socketIO_client import SocketIO
     from socketIO_client.exceptions import ConnectionError
 
+    def on_pushState(*args):
+        pass
+
+    if commands:
+        global volumioIO
+
+        if volumioIO == None:
+            try:
+                volumioIO = SocketIO('localhost', 3000, wait_for_connection=False)
+                volumioIO.on('pushState', on_pushState)
+            except ConnectionError, x:
+                logger.warn("{}".format(x))
+                return
+
+        for command in commands:
+            parameters = dict(zip(('function', 'arguments', 'callback'), command))
+            event = parameters.get('function')
+            if event:
+                logger.info("Emitting event '%s' to Volumio.", event)
+                data = parameters.get('arguments')
+                if data:
+                    volumioIO.emit(event, data, callback=parameters.get('callback'))
+                else:
+                    volumioIO.emit(event, callback=parameters.get('callback'))
+                volumioIO.wait_for_callbacks(seconds=0.1)
+
+    else:
+        logger.warn("No commands specified for Volumio.")
+
+#
+# Calls volumio to start playing.
+#
+def playbackPlay():
+    volumio([('play', {})])
+#
+# Calls volumio to stop playing.
+#
+def playbackStop():
+    volumio([('stop', {})])
+#
+# Calls volumio play previous title.
+#
+def playbackPrevious():
+    volumio([('prev', {})])
+#
+# Calls volumio to play next title.
+#
+def playbackNext():
+    volumio([('next', {})])
+#
+# Calls volumio to increase volume.
+#
+def volumioShutdown():
+    volumio([('shutdown', {})])
+#
+# Calls volumio to start playing the specified playlist.
+#
+def playPlaylist(name):
+
     def on_play(*args):
         logger.info("Started playing playlist with result: %s", str(args))
 
-    if playlist_name and len(playlist_name) == 10:
-        logger.info("Start playing playlist '%s'", playlist_name)
-        try:
-            with SocketIO('localhost', 3000, wait_for_connection=False) as socketIO:
-                socketIO.emit('stop')
-                socketIO.emit('playPlaylist', {"name": playlist_name}, on_play)
-        except ConnectionError, x:
-            logger.warn(x)
+    if name:
+        logger.info("Start playing playlist '%s'.", name)
+        volumio([
+            ('stop', {}),
+            ('playPlaylist', {"name": name}, on_play),
+        ])
+    else:
+        logger.warn("No playlist name specified to play.")
 
 #
 # Reads input events from HID
@@ -54,10 +123,12 @@ def volumio(playlist_name):
 
 if __name__ == "__main__":
 
+    import contextlib
+
     from operator import add
 
     from evdev import InputDevice, ecodes, categorize
- 
+
     characters = {
         ecodes.KEY_0: "0",
         ecodes.KEY_1: "1",
@@ -71,38 +142,47 @@ if __name__ == "__main__":
         ecodes.KEY_9: "9",
     }
 
-    try:
-
-        # open HID device for RFID reader
-        device = InputDevice('/dev/input/by-id/usb-13ba_Barcode_Reader-event-kbd')
-
-        # signal handling
-        def signal_handler(signal, frame):
-            device.ungrab()
-            sys.exit(0)
-        signal.signal(signal.SIGINT, signal_handler)
-
-        # grab device exclusivly
+    @contextlib.contextmanager
+    def HID(dev):
+        logging.debug("[HID] Get HID device at '%s'.", dev)
+        device = InputDevice(dev)
         device.grab()
+        try:
+            yield device
+        except KeyboardInterrupt:
+            pass
+        finally:
+            logging.debug("[HID] Ungrab HID device at '%s'.", dev)
+            device.ungrab()
 
-        def enter(chars):
-            serial = reduce(add, chars)
-            volumio(playlist_name=serial)
+    try:
+        with HID('/dev/input/by-id/usb-13ba_Barcode_Reader-event-kbd') as hid:
+            def enter(chars):
+                if not chars or len(chars) == 0: return
 
-        chars = []
-        for event in device.read_loop():
-            if event.type == ecodes.EV_KEY:
-                key = categorize(event)
-                if key.keystate == key.key_down:
-                    if key.scancode == ecodes.KEY_ENTER:
-                        enter(chars)
-                        chars = []
-                    else:
-                        char = characters.get(key.scancode)
-                        if char:
+                serial = reduce(add, chars)
+                if   serial == '0004775724': playbackPlay()
+                elif serial == '0004626662': playbackStop()
+                elif serial == '0004797126': playbackPrevious()
+                elif serial == '0004797218': playbackNext()
+                elif serial == '0005156540': volumioShutdown()
+                elif serial and len(serial) == 10 and serial.isdigit():
+                    playPlaylist(name=serial)
+
+            logger.info("Clearance to start!")
+
+            chars = []
+            for event in hid.read_loop():
+                if event.type == ecodes.EV_KEY:
+                    key = categorize(event)
+                    if key.keystate == key.key_down:
+                        if key.scancode == ecodes.KEY_ENTER:
+                            enter(chars)
+                            chars = []
+                        else:
+                            char = characters.get(key.scancode, '�')
                             chars.append(char)
 
     except OSError, x:
         logger.error(x)
-
 

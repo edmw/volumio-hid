@@ -62,6 +62,7 @@ logger = get_logger(logging.DEBUG)
 #
 
 volumioIO = None
+volumioState = {}
 
 from socketIO_client import SocketIO
 from socketIO_client.exceptions import ConnectionError
@@ -71,7 +72,8 @@ def Volumio(server, port):
     global volumioIO
 
     def on_pushState(*args):
-        pass
+        global volumioState
+        volumioState = args['pushState']
 
     logger.debug("[Volumio] Connect to '%s:%d'", server, port)
     volumioIO = SocketIO(server, port, wait_for_connection=False)
@@ -83,7 +85,7 @@ def Volumio(server, port):
         volumioIO.disconnect()
 
 #
-# Calls volumio and emits the specified commands.
+# Calls Volumio and emits the specified commands.
 # @param commands: List of commands. Each command a tuple of function, arguments and optional callback.
 #
 def volumio(commands):
@@ -103,32 +105,50 @@ def volumio(commands):
         logger.warn("No commands specified for Volumio")
 
 #
-# Calls volumio to start playing.
+# Calls Volumio to start playing.
 #
 def playbackPlay():
     volumio([('play', {})])
 #
-# Calls volumio to stop playing.
+# Calls Volumio to stop playing.
 #
 def playbackStop():
     volumio([('stop', {})])
 #
-# Calls volumio play previous title.
+# Calls Volumio play previous title.
 #
 def playbackPrevious():
     volumio([('prev', {})])
 #
-# Calls volumio to play next title.
+# Calls Volumio to play next title.
 #
 def playbackNext():
     volumio([('next', {})])
 #
-# Calls volumio to increase volume.
+# Calls Volumio to turn volume up.
+#
+def volumeUp():
+    volumio([('volume', '+')])
+#
+# Calls Volumio to turn volume down.
+#
+def volumeDown():
+    volumio([('volume', '-')])
+#
+# Calls Volumio to toggle mute.
+#
+def muteToggle():
+    if volumioState.get('mute'):
+        volumio(['unmute', {}])
+    else:
+        volumio(['mute', {}])
+#
+# Calls Volumio to increase volume.
 #
 def volumioShutdown():
     volumio([('shutdown', {})])
 #
-# Calls volumio to start playing the specified playlist.
+# Calls Volumio to start playing the specified playlist.
 #
 def playPlaylist(name):
 
@@ -193,6 +213,9 @@ def rfid(event_loop):
                 elif serial == '0004626662': playbackStop()
                 elif serial == '0004797126': playbackPrevious()
                 elif serial == '0004797218': playbackNext()
+                elif serial == '1234567890': volumeUp()
+                elif serial == '1234567890': volumeDown()
+                elif serial == '1234567890': muteToggle()
                 elif serial == '0005156540': volumioShutdown()
                 elif serial and len(serial) == 10 and serial.isdigit():
                     playPlaylist(name=serial)

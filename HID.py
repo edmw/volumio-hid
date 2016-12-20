@@ -48,14 +48,13 @@ def get_logger(level):
         consoleHandler = logging.StreamHandler()
         consoleHandler.setFormatter(formatter)
         logger.addHandler(consoleHandler)
-    logger = logging.getLogger('RFID')
+    logger = logging.getLogger('VOLUMIO-HID')
     logger.setLevel(level)
     return logger
 
 logger = get_logger(logging.DEBUG)
 
-#logging.getLogger('socketIO-client').setLevel(logging.DEBUG)
-#logging.basicConfig()
+logging.getLogger('socketIO-client').setLevel(logging.DEBUG)
 
 #
 # VOLUMIO
@@ -64,20 +63,23 @@ logger = get_logger(logging.DEBUG)
 volumioIO = None
 volumioState = {}
 
-from socketIO_client import SocketIO
+from socketIO_client import SocketIO, BaseNamespace
 from socketIO_client.exceptions import ConnectionError
+
+class VolumioNamespace(BaseNamespace):
+    def on_pushState(self, *args):
+        global volumioState
+        volumioState = args['pushState']
+    def on_event(self, event, *args):
+        print(event)
 
 @contextlib.contextmanager
 def Volumio(server, port):
     global volumioIO
 
-    def on_pushState(*args):
-        global volumioState
-        volumioState = args['pushState']
-
     logger.debug("[Volumio] Connect to '%s:%d'", server, port)
-    volumioIO = SocketIO(server, port, wait_for_connection=False)
-    volumioIO.on('pushState', on_pushState)
+    volumioIO = SocketIO(server, port, VolumioNamespace, wait_for_connection=True)
+    volumioIO.emit('getState')
     try:
         yield volumioIO
     finally:
@@ -139,9 +141,9 @@ def volumeDown():
 #
 def muteToggle():
     if volumioState.get('mute'):
-        volumio(['unmute', {}])
+        volumio([('unmute', {})])
     else:
-        volumio(['mute', {}])
+        volumio([('mute', {})])
 #
 # Calls Volumio to increase volume.
 #
@@ -165,10 +167,25 @@ def playPlaylist(name):
         logger.warn("No playlist name specified to play")
 
 #
-# Reads input events from RFID HID
+# HID
 #
 
 from evdev import InputDevice, ecodes, categorize
+
+def grab(label, dev):
+    logger.debug("[%s] Get HID device at '%s'", label, dev)
+    device = InputDevice(dev)
+    logger.debug("[%s] Grab HID device '%s'", label, device.name)
+    device.grab()
+    return device
+
+def ungrab(label, device):
+    logger.debug("[%s] Ungrab HID device '%s'", label, device.name)
+    device.ungrab()
+
+#
+# Reads input events from RFID HID
+#
 
 RFID_DEVICE = '/dev/input/by-id/usb-13ba_Barcode_Reader-event-kbd'
 RFID_VENDOR = 0x13ba
@@ -177,6 +194,7 @@ RFID_PRODUCT = 0x0018
 def rfid(event_loop):
 
     from operator import add
+    from functools import partial, reduce
 
     characters = {
         ecodes.KEY_0: "0",
@@ -191,59 +209,45 @@ def rfid(event_loop):
         ecodes.KEY_9: "9",
     }
 
-    @contextlib.contextmanager
-    def RFID(dev):
-        logger.debug("[RFID] Get HID device at '%s'.", dev)
-        device = InputDevice(dev)
-        device.grab()
-        try:
-            yield device
-        finally:
-            logger.debug("[RFID] Ungrab HID device at '%s'.", dev)
-            device.ungrab()
-
     try:
-        with RFID(RFID_DEVICE) as hid:
+        hid = grab('RFID', RFID_DEVICE)
 
-            def enter(chars):
-                if not chars or len(chars) == 0: return
+        def enter(chars):
+            if not chars or len(chars) == 0: return
 
-                serial = reduce(add, chars)
-                if   serial == '0004775724': playbackPlay()
-                elif serial == '0004626662': playbackStop()
-                elif serial == '0004797126': playbackPrevious()
-                elif serial == '0004797218': playbackNext()
-                elif serial == '1234567890': volumeUp()
-                elif serial == '1234567890': volumeDown()
-                elif serial == '1234567890': muteToggle()
-                elif serial == '0005156540': volumioShutdown()
-                elif serial and len(serial) == 10 and serial.isdigit():
-                    playPlaylist(name=serial)
+            serial = reduce(add, chars)
+            if   serial == '0004775724': playbackPlay()
+            elif serial == '0004626662': playbackStop()
+            elif serial == '0004797126': playbackPrevious()
+            elif serial == '0004797218': playbackNext()
+            elif serial == '0004748488': volumeUp()
+            elif serial == '0004817709': volumeDown()
+            elif serial == '0004818971': muteToggle()
+            elif serial == '0005156540': volumioShutdown()
+            elif serial and len(serial) == 10 and serial.isdigit():
+                playPlaylist(name=serial)
 
-            chars = []
+        def read_events(hid):
+            chars = [] 
+            while True:
+                events = yield from hid.async_read()
+                for event in events:
+                    if event.type == ecodes.EV_KEY:
+                        key = categorize(event)
+                        if key.keystate == key.key_down:
+                            if key.scancode == ecodes.KEY_ENTER:
+                                enter(chars)
+                                chars = []
+                            else:
+                                char = characters.get(key.scancode, '�')
+                                chars.append(char)
 
-            def read_events(hid):
-                while True:
-                    events = yield from hid.async_read()
-                    for event in events:
-                        if event.type == ecodes.EV_KEY:
-                            key = categorize(event)
-                            if key.keystate == key.key_down:
-                                if key.scancode == ecodes.KEY_ENTER:
-                                    enter(chars)
-                                    chars = []
-                                else:
-                                    char = characters.get(key.scancode, '�')
-                                    chars.append(char)
+        def read_events_done(task, device):
+            ungrab('RFID', device)
 
-            logger.info("Clearance to start!")
-
-            asyncio.async(read_events(hid))
-
-            try:
-                event_loop.run_forever()
-            finally:
-                event_loop.close()
+        task = asyncio.async(read_events(hid))
+        task.add_done_callback(partial(read_events_done, device=hid))
+        return task
 
     except OSError as x:
         logger.error(x)
@@ -255,20 +259,41 @@ def rfid(event_loop):
 # using asynchrouns IO.
 #
 
+def supervisor(loop, *tasks, cancel=False, close=False):
+    from concurrent.futures import CancelledError
+    try:
+        if cancel:
+            for task in tasks:
+                task.cancel()
+        if len(tasks) == 1:
+            future = tasks[0]
+        else:
+            future = asyncio.gather(tasks, return_exceptions=True)
+        while True:
+            result = loop.run_until_complete(future)
+    except CancelledError:
+        pass
+    if close:
+        loop.close()
+
 if __name__ == "__main__":
     # asynchronous input loop
     loop = asyncio.get_event_loop()
     try:
         # connect to volumio using websocket
         with Volumio('localhost', 3000) as socket:
+            # schedule reading input events from rfid hid
+            rfid_task = rfid(loop)
             # start reading input events asynchronously
-            rfid(loop)
+            logger.info("Clearance ...")
+            supervisor(loop, rfid_task)
             # start reacting to volumio
             socket.wait()
     except ConnectionError as x:
         logger.error("{}".format(x))
     except KeyboardInterrupt:
         pass
-    # stop asynchronous input loop
-    for task in asyncio.Task.all_tasks():
-        task.cancel()
+    # stop reading input events asynchronously
+    logger.info("Grounding ...")
+    supervisor(loop, rfid_task, cancel=True, close=True)
+

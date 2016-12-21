@@ -28,7 +28,7 @@
 # THE SOFTWARE.
 #
 
-import sys, logging, asyncio
+import sys, logging, asyncio, threading
 
 import contextlib
 
@@ -38,7 +38,7 @@ import contextlib
 #
 def get_logger(level):
     import logging.handlers
-    logger = logging.getLogger()
+    logger = logging.getLogger('VOLUMIO-HID')
     logger.setLevel(level)
     formatter = logging.Formatter('%(name)s: %(message)s')
     handler = logging.handlers.SysLogHandler('/dev/log')
@@ -48,43 +48,43 @@ def get_logger(level):
         consoleHandler = logging.StreamHandler()
         consoleHandler.setFormatter(formatter)
         logger.addHandler(consoleHandler)
-    logger = logging.getLogger('VOLUMIO-HID')
-    logger.setLevel(level)
     return logger
 
 logger = get_logger(logging.DEBUG)
-
-logging.getLogger('socketIO-client').setLevel(logging.DEBUG)
 
 #
 # VOLUMIO
 #
 
 volumioIO = None
+volumioThread = None
 volumioState = {}
 
-from socketIO_client import SocketIO, BaseNamespace
+from socketIO_client import SocketIO, WebsocketTransport, BaseNamespace, LoggingNamespace
 from socketIO_client.exceptions import ConnectionError
-
-class VolumioNamespace(BaseNamespace):
-    def on_pushState(self, *args):
-        global volumioState
-        volumioState = args['pushState']
-    def on_event(self, event, *args):
-        print(event)
 
 @contextlib.contextmanager
 def Volumio(server, port):
     global volumioIO
+    global volumioThread
+
+    class VolumioNamespace(LoggingNamespace):
+        def on_pushState(self, state):
+            global volumioState
+            volumioState = state
 
     logger.debug("[Volumio] Connect to '%s:%d'", server, port)
     volumioIO = SocketIO(server, port, VolumioNamespace, wait_for_connection=True)
-    volumioIO.emit('getState')
+    volumioThread = threading.Thread(target=volumioIO.wait)
+    volumioThread.start()
     try:
         yield volumioIO
     finally:
         logger.debug("[Volumio] Disconnect")
         volumioIO.disconnect()
+        volumioIO = None
+        volumioThread.join()
+        volumioThread = None
 
 #
 # Calls Volumio and emits the specified commands.
@@ -261,16 +261,21 @@ def rfid(event_loop):
 
 def supervisor(loop, *tasks, cancel=False, close=False):
     from concurrent.futures import CancelledError
+
+    tasks = list(filter(None, tasks))
     try:
         if cancel:
             for task in tasks:
                 task.cancel()
         if len(tasks) == 1:
             future = tasks[0]
-        else:
+        elif len(tasks) > 1:
             future = asyncio.gather(tasks, return_exceptions=True)
-        while True:
-            result = loop.run_until_complete(future)
+        else:
+            future = None
+        if future:
+            while True:
+                loop.run_until_complete(future)
     except CancelledError:
         pass
     if close:
@@ -279,21 +284,20 @@ def supervisor(loop, *tasks, cancel=False, close=False):
 if __name__ == "__main__":
     # asynchronous input loop
     loop = asyncio.get_event_loop()
+    task_rfid = None
     try:
         # connect to volumio using websocket
         with Volumio('localhost', 3000) as socket:
             # schedule reading input events from rfid hid
-            rfid_task = rfid(loop)
+            task_rfid = rfid(loop)
             # start reading input events asynchronously
             logger.info("Clearance ...")
-            supervisor(loop, rfid_task)
-            # start reacting to volumio
-            socket.wait()
+            supervisor(loop, task_rfid, None)
     except ConnectionError as x:
         logger.error("{}".format(x))
     except KeyboardInterrupt:
         pass
     # stop reading input events asynchronously
     logger.info("Grounding ...")
-    supervisor(loop, rfid_task, cancel=True, close=True)
+    supervisor(loop, task_rfid, cancel=True, close=True)
 

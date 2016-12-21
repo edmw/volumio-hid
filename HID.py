@@ -97,10 +97,11 @@ def Volumio(server, port):
 
     class VolumioNamespace(LoggingNamespace):
         def on_pushState(self, state):
+            logger.debug("Received event 'pushState' from Volumio")
             global volumioState
             volumioState = state
         def on_event(self, event, *args):
-            logger.debug("Received event '%s' from Volumio", event)
+            logger.debug("Received event '%s' from Volumio (unhandled)", event)
 
     logger.debug("[Volumio] Connect to '%s:%d'", server, port)
     volumioIO = SocketIO(server, port, VolumioNamespace, wait_for_connection=False)
@@ -129,7 +130,7 @@ def volumio_emit(events):
             if event:
                 logger.info("Emitting event '%s' to Volumio", event_name)
                 event_data = parameters.get('data')
-                if data:
+                if event_data:
                     volumioIO.emit(event_name, even_data, callback=parameters.get('callback'))
                 else:
                     volumioIO.emit(event_name, callback=parameters.get('callback'))

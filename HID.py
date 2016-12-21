@@ -31,8 +31,33 @@
 import sys, logging, asyncio, threading
 
 import contextlib
+from functools import partial
+from functools import reduce
+from operator import add
+
 
 #
+# Reads the configuration from file
+#
+def read_configuration(name):
+    import yaml
+    return yaml.load(open('{}.conf'.format(name), 'r'))
+
+config = read_configuration('HID')
+
+#
+# Gets a value from the configuration for the specified keys.
+# If there is no value returns either None or the specified default.
+#
+def parameter(*keys, default=None):
+    def get(dictionary, *keys):
+        sentry = object()
+        def getter(dictionary, key):
+            return dictionary.get(key, sentry) if isinstance(dictionary, dict) else default
+        value = reduce(getter, keys, dictionary)
+        return value if not value is sentry else default
+    return get(config, *keys)
+
 # Creates a logger which writes its messages to the syslog
 # and additionally to stdout if this script is attached to a terminal.
 #
@@ -40,8 +65,9 @@ def get_logger(level):
     import logging.handlers
     logger = logging.getLogger('VOLUMIO-HID')
     logger.setLevel(level)
-    formatter = logging.Formatter('%(name)s: %(message)s')
-    handler = logging.handlers.SysLogHandler('/dev/log')
+    formatter = logging.Formatter(parameter('logging', 'format'))
+    import syslog
+    handler = logging.handlers.SysLogHandler('/dev/log', facility=syslog.LOG_LOCAL0)
     handler.formatter = formatter
     logger.addHandler(handler)
     if sys.stdout.isatty():
@@ -50,7 +76,7 @@ def get_logger(level):
         logger.addHandler(consoleHandler)
     return logger
 
-logger = get_logger(logging.DEBUG)
+logger = get_logger(parameter('logging', 'level'))
 
 #
 # VOLUMIO
@@ -76,7 +102,7 @@ def Volumio(server, port):
             logger.debug("Received event '%s' from Volumio", event)
 
     logger.debug("[Volumio] Connect to '%s:%d'", server, port)
-    volumioIO = SocketIO(server, port, VolumioNamespace, wait_for_connection=True)
+    volumioIO = SocketIO(server, port, VolumioNamespace, wait_for_connection=False)
     volumioThread = threading.Thread(target=volumioIO.wait)
     volumioThread.start()
     try:
@@ -89,73 +115,103 @@ def Volumio(server, port):
         volumioThread = None
 
 #
-# Calls Volumio and emits the specified commands.
-# @param commands: List of commands. Each command a tuple of function, arguments and optional callback.
+# Calls Volumio and emits the specified events.
+# @param events: List of events. Each event is a tuple of name, data and optional callback.
 #
-def volumio(commands):
+def volumio_emit(events):
     if not volumioIO: return
 
-    if commands:
-        for command in commands:
-            parameters = dict(zip(('function', 'arguments', 'callback'), command))
-            event = parameters.get('function')
+    if events:
+        for event in events:
+            parameters = dict(zip(('name', 'data', 'callback'), event))
+            event_name = parameters.get('name')
             if event:
-                logger.info("Emitting event '%s' to Volumio", event)
-                data = parameters.get('arguments')
+                logger.info("Emitting event '%s' to Volumio", event_name)
+                event_data = parameters.get('data')
                 if data:
-                    volumioIO.emit(event, data, callback=parameters.get('callback'))
+                    volumioIO.emit(event_name, even_data, callback=parameters.get('callback'))
                 else:
-                    volumioIO.emit(event, callback=parameters.get('callback'))
+                    volumioIO.emit(event_name, callback=parameters.get('callback'))
 
     else:
-        logger.warn("No commands specified for Volumio")
+        logger.warn("No events specified for Volumio")
+
+#
+# VOLUMIO COMMANDS
+#
+
+volumioCommands = {}
+
+def volumio_command(func):
+    global volumioCommands; volumioCommands[func.__name__] = func
+    return func
+
+#
+# Calls the specified command on Volumio with the specified arguments.
+# @param name Name of the command to execute.
+#
+def volumio(command_name, *args):
+    command = volumioCommands.get(command_name)
+    if command:
+        command(*args)
+    else:
+        raise NotImplementedError("Command '{}' not implemented for Volumio".format(command_name))
 
 #
 # Calls Volumio to start playing.
 #
+@volumio_command
 def playbackPlay():
-    volumio([('play', {})])
+    volumio_emit([('play', {})])
 #
 # Calls Volumio to stop playing.
 #
+@volumio_command
 def playbackStop():
-    volumio([('stop', {})])
+    volumio_emit([('stop', {})])
 #
 # Calls Volumio play previous title.
 #
+@volumio_command
 def playbackPrevious():
-    volumio([('prev', {})])
+    volumio_emit([('prev', {})])
 #
 # Calls Volumio to play next title.
 #
+@volumio_command
 def playbackNext():
-    volumio([('next', {})])
+    volumio_emit([('next', {})])
 #
 # Calls Volumio to turn volume up.
 #
+@volumio_command
 def volumeUp():
-    volumio([('volume', '+')])
+    volumio_emit([('volume', '+')])
 #
 # Calls Volumio to turn volume down.
 #
+@volumio_command
 def volumeDown():
-    volumio([('volume', '-')])
+    volumio_emit([('volume', '-')])
 #
 # Calls Volumio to toggle mute.
 #
+@volumio_command
 def muteToggle():
     if volumioState.get('mute'):
-        volumio([('unmute', {})])
+        volumio_emit([('unmute', {})])
     else:
-        volumio([('mute', {})])
+        volumio_emit([('mute', {})])
 #
 # Calls Volumio to increase volume.
 #
+@volumio_command
 def volumioShutdown():
-    volumio([('shutdown', {})])
+    volumio_emit([('shutdown', {})])
 #
 # Calls Volumio to start playing the specified playlist.
 #
+@volumio_command
 def playPlaylist(name):
 
     def on_play(*args):
@@ -163,7 +219,7 @@ def playPlaylist(name):
 
     if name:
         logger.info("Start playing playlist '%s'", name)
-        volumio([
+        volumio_emit([
             ('stop', {}),
             ('playPlaylist', {"name": name}, on_play),
         ])
@@ -191,14 +247,7 @@ def ungrab(label, device):
 # Reads input events from RFID HID
 #
 
-RFID_DEVICE = '/dev/input/by-id/usb-13ba_Barcode_Reader-event-kbd'
-RFID_VENDOR = 0x13ba
-RFID_PRODUCT = 0x0018
-
 def rfid(event_loop):
-
-    from operator import add
-    from functools import partial, reduce
 
     characters = {
         ecodes.KEY_0: "0",
@@ -213,23 +262,20 @@ def rfid(event_loop):
         ecodes.KEY_9: "9",
     }
 
+    command_serial_map =  parameter('rfid', 'serials', default={})
+
     try:
-        hid = grab('RFID', RFID_DEVICE)
+        hid = grab('RFID', parameter('rfid', 'device'))
 
         def enter(chars):
             if not chars or len(chars) == 0: return
 
             serial = reduce(add, chars)
-            if   serial == '0004775724': playbackPlay()
-            elif serial == '0004626662': playbackStop()
-            elif serial == '0004797126': playbackPrevious()
-            elif serial == '0004797218': playbackNext()
-            elif serial == '0004748488': volumeUp()
-            elif serial == '0004817709': volumeDown()
-            elif serial == '0004818971': muteToggle()
-            elif serial == '0005156540': volumioShutdown()
+            if serial in command_serial_map:
+                command = command_serial_map.get(serial)
+                volumio(command)
             elif serial and len(serial) == 10 and serial.isdigit():
-                playPlaylist(name=serial)
+                volumio('playPlaylist', name=serial)
 
         def read_events(hid):
             chars = []
@@ -291,7 +337,9 @@ if __name__ == "__main__":
     task_rfid = None
     try:
         # connect to volumio using websocket
-        with Volumio('localhost', 3000) as socket:
+        server = parameter('volumio', 'server', default='localhost')
+        port = parameter('volumio', 'port', default='3000')
+        with Volumio(server, port) as socket:
             # schedule reading input events from rfid hid
             task_rfid = rfid(loop)
             # start reading input events asynchronously

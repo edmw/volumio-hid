@@ -7,12 +7,18 @@ This is part of a DIY Music Player project.
 ## Requires
 
  * Python 3
- 
+
 ## Uses
 
  * [python-evdev](https://github.com/gvalkov/python-evdev)
  * [socketIO-client](https://github.com/invisibleroads/socketIO-client)
- 
+ * [pyYAML](http://pyyaml.org/)
+
 ## Depends on
 
  * [Volumio](https://volumio.org/)
+
+## TODO
+
+ * https://websockets.readthedocs.io/en/stable/index.html
+ 

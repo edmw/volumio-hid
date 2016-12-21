@@ -80,7 +80,7 @@ def Volumio(server, port):
     try:
         yield volumioIO
     finally:
-        logger.debug("[Volumio] Disconnect")
+        logger.debug("[Volumio] Disconnect from '%s:%d'", server, port)
         volumioIO.disconnect()
         volumioIO = None
         volumioThread.join()
@@ -91,6 +91,8 @@ def Volumio(server, port):
 # @param commands: List of commands. Each command a tuple of function, arguments and optional callback.
 #
 def volumio(commands):
+    if not volumioIO: return
+
     if commands:
         for command in commands:
             parameters = dict(zip(('function', 'arguments', 'callback'), command))
@@ -228,7 +230,7 @@ def rfid(event_loop):
                 playPlaylist(name=serial)
 
         def read_events(hid):
-            chars = [] 
+            chars = []
             while True:
                 events = yield from hid.async_read()
                 for event in events:
@@ -300,4 +302,3 @@ if __name__ == "__main__":
     # stop reading input events asynchronously
     logger.info("Grounding ...")
     supervisor(loop, task_rfid, cancel=True, close=True)
-

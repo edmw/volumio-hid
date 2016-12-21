@@ -72,6 +72,8 @@ def Volumio(server, port):
         def on_pushState(self, state):
             global volumioState
             volumioState = state
+        def on_event(self, event, *args):
+            logger.debug("Received event '%s' from Volumio", event)
 
     logger.debug("[Volumio] Connect to '%s:%d'", server, port)
     volumioIO = SocketIO(server, port, VolumioNamespace, wait_for_connection=True)
@@ -294,7 +296,7 @@ if __name__ == "__main__":
             task_rfid = rfid(loop)
             # start reading input events asynchronously
             logger.info("Clearance ...")
-            supervisor(loop, task_rfid, None)
+            supervisor(loop, task_rfid)
     except ConnectionError as x:
         logger.error("{}".format(x))
     except KeyboardInterrupt:

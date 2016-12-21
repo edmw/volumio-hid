@@ -58,6 +58,7 @@ def parameter(*keys, default=None):
         return value if not value is sentry else default
     return get(config, *keys)
 
+#
 # Creates a logger which writes its messages to the syslog
 # and additionally to stdout if this script is attached to a terminal.
 #
@@ -203,12 +204,6 @@ def muteToggle():
     else:
         volumio_emit([('mute', {})])
 #
-# Calls Volumio to increase volume.
-#
-@volumio_command
-def volumioShutdown():
-    volumio_emit([('shutdown', {})])
-#
 # Calls Volumio to start playing the specified playlist.
 #
 @volumio_command
@@ -225,6 +220,12 @@ def playPlaylist(name):
         ])
     else:
         logger.warn("No playlist name specified to play")
+#
+# Calls Volumio to shutdown.
+#
+@volumio_command
+def volumioShutdown():
+    volumio_emit([('shutdown', {})])
 
 #
 # HID

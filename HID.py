@@ -28,20 +28,21 @@
 # THE SOFTWARE.
 #
 
-import sys, logging, asyncio, threading
+import sys, os, logging, asyncio, threading
 
 import contextlib
 from functools import partial
 from functools import reduce
 from operator import add
 
+__location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
 
 #
 # Reads the configuration from file
 #
 def read_configuration(name):
     import yaml
-    return yaml.load(open('{}.conf'.format(name), 'r'))
+    return yaml.load(open(os.path.join(__location__, '{}.conf'.format(name)), 'r'))
 
 config = read_configuration('HID')
 

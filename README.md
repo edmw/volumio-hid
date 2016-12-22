@@ -20,4 +20,4 @@ This is part of a DIY Audio Player project.
 
 ## TODO
 
- * https://websockets.readthedocs.io/en/stable/index.html
+ * Evaluate https://websockets.readthedocs.io/en/stable/index.html

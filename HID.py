@@ -132,7 +132,7 @@ def volumio_emit(events):
                 logger.info("Emitting event '%s' to Volumio", event_name)
                 event_data = parameters.get('data')
                 if event_data:
-                    volumioIO.emit(event_name, even_data, callback=parameters.get('callback'))
+                    volumioIO.emit(event_name, event_data, callback=parameters.get('callback'))
                 else:
                     volumioIO.emit(event_name, callback=parameters.get('callback'))
 
@@ -278,7 +278,7 @@ def rfid(event_loop):
                 command = command_serial_map.get(serial)
                 volumio(command)
             elif serial and len(serial) == 10 and serial.isdigit():
-                volumio('playPlaylist', name=serial)
+                volumio('playPlaylist', serial)
 
         def read_events(hid):
             chars = []

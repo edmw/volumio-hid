@@ -280,6 +280,8 @@ def rfid(event_loop):
             elif serial and len(serial) == 10 and serial.isdigit():
                 volumio('playPlaylist', serial)
 
+            logger.debug("[RFID] Received serial '%s' from reader", serial)
+
         def read_events(hid):
             chars = []
             while True:

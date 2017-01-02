@@ -250,7 +250,7 @@ def ungrab(label, device):
 # Reads input events from RFID HID
 #
 
-def rfid(event_loop):
+def rfid():
 
     characters = {
         ecodes.KEY_0: "0",
@@ -346,7 +346,7 @@ if __name__ == "__main__":
         port = parameter('volumio', 'port', default='3000')
         with Volumio(server, port) as socket:
             # schedule reading input events from rfid hid
-            task_rfid = rfid(loop)
+            task_rfid = rfid()
             # start reading input events asynchronously
             logger.info("Clearance ...")
             supervisor(loop, task_rfid)
